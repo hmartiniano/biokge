@@ -84,69 +84,90 @@ def get_parser():
 
 
 def main():
+    # Get command line arguments
     parser = get_parser()
     args = parser.parse_args()
+
+    # Print the command line arguments for debugging purposes
     print(f"Running with args: {args}")
 
-    # Ensure args.out_dir exists
+    # Ensure that the output directory exists. If it doesn't, create it.
     p = pathlib.Path(args.out_dir)
     p.mkdir(parents=True, exist_ok=True)
-    #
+
+    # Read in the raw edges from a CSV file and clean them by removing Mondo disease ontology terms
     raw_edges = pd.read_csv(args.fname, index_col=0)
     raw_edges = clean_mondo(raw_edges)
+
+    # Print the shape of the dataframe before cleaning predicates
     print("initial dataframe:")
     print(raw_edges.shape)
-    try: 
+
+    # Read in predicates to exclude from a file named "exclude.txt". If the file doesn't exist, set predicates_to_exclude to an empty list.
+    try:
         predicates_to_exclude = read_file("exclude.txt")
         print("Excluding:")
         for predicate in predicates_to_exclude:
             print(predicate)
-    except:
+    except FileNotFoundError:
         predicates_to_exclude = []
 
-    try: 
+    # Read in predicates to include from a file named "include.txt". If the file doesn't exist, set predicates_to_include to an empty list.
+    try:
         predicates_to_include = read_file("include.txt")
         print("Including:")
         for predicate in predicates_to_include:
             print(predicate)
-    except:
+    except FileNotFoundError:
         predicates_to_include = []
 
+    # Print the predicates to exclude and include
     print("predicates to include:")
     print(predicates_to_include)
     print("predicates to exclude:")
     print(predicates_to_exclude)
 
+    # Remove excluded predicates from the dataframe. If there are included predicates, keep only those.
     df = raw_edges[~raw_edges["predicate"].isin(predicates_to_exclude)]
     if predicates_to_include:
         df = df[df["predicate"].isin(predicates_to_include)]
+    # Print the shape of the dataframe after cleaning predicates
     print("dataframe after excluding predicates:")
     print(df.shape)
 
+    # Create a directed graph from the edges in the dataframe
     g = nx.from_pandas_edgelist(df, source='subject', target='object', edge_attr="predicate", create_using=nx.MultiDiGraph, edge_key="predicate")
 
+    # Print the number of connected components and the size of the largest connected component (LCC) in the graph.
     print("connected components:", Counter(map(len, nx.connected_components(g.to_undirected()))))
     lcc = max(nx.connected_components(g.to_undirected()), key=len)
     print("Size of lcc:", len(lcc))
 
+    # Remove all nodes from the graph that are not part of the LCC
     g = g.subgraph(lcc)
 
+    # Convert the subgraph back to a dataframe and drop the "predicate" column, which is now an attribute
     edges = nx.to_pandas_edgelist(g, source='subject', target='object')[["subject", "predicate", "object"]]
 
+    # Print the shape of the dataframe after removing isolated nodes
     print("dataframe after excluding isolated nodes:")
     print(edges.shape)
 
+    # Split the dataset into a training set and test set for prediction. If there are labels to predict, keep only those.
     if args.labels_to_predict:
         other = edges[~edges["predicate"].isin(args.labels_to_predict)]
         df = edges[edges["predicate"].isin(args.labels_to_predict)]
 
-        # to ensure that HPO terms are present in all splits
+        # Extract the label from the predicate column (assuming it is in the format "label-id")
         y = df["predicate"].str.split("-").str.get(1)
     else:
         df = edges
         y = df["predicate"]
 
+    # Split the dataset into training, validation, test and holdout sets
     X_train, X_val, X_test, X_holdout, Y_train, Y_val, Y_test, Y_holdout = data_split(df, y, train_frac=0.8, random_state=42)
+
+    # Print statistics on each of the resulting splits (training, validation, test and holdout sets)
     for i in X_train, X_val, X_test, X_holdout:
         analyze(i)
     print("Train triples:", X_train.shape[0])
@@ -154,42 +175,48 @@ def main():
     print("Val triples:", X_val.shape[0])
     print("Hold out triples:", X_holdout.shape[0])
 
+    # If there are labels to predict, combine the training set with all other edges (not in the labels to predict)
     if args.labels_to_predict:
         print(f"Combining {args.labels_to_predict} datasets with other triples")
         X_train = pd.concat((other, X_train)).sample(frac=1).reset_index(drop=True)
-        print("Train triples:", X_train.shape[0])
-
     # Save Training, Test and Validation sets
     X_train.to_csv(f"{args.out_dir}/kg_train.tsv.gz", sep="\t", header=False, index=False)
     X_test.to_csv(f"{args.out_dir}/kg_test.tsv.gz", sep="\t", header=False, index=False)
     X_val.to_csv(f"{args.out_dir}/kg_valid.tsv.gz", sep="\t", header=False, index=False)
     X_holdout.to_csv(f"{args.out_dir}/kg_holdout.tsv.gz", sep="\t", header=False, index=False)
 
-    # Create datasets for 10-fold CV prediction
-    # 10 fold splits are done on the df dataframe 
-    # KG data is added to the train fold if args.labels_to_predict is not empty
+    # Create datasets for 10-fold cross-validation prediction.
+    # The 10 fold splits are done on the df dataframe.
     kf = KFold(n_splits=10, random_state=42, shuffle=True)
     for n, (train_index, test_index) in enumerate(kf.split(df, y=y)):
         print("TRAIN:", train_index.shape, "TEST:", test_index.shape)
         X_train_cv, X_test_cv = df.iloc[train_index, :], df.iloc[test_index, :]
+
+        # If there are labels to predict, combine the training set with all other edges (not in the labels to predict)
         if args.labels_to_predict:
             X_train_cv_full = pd.concat((other, X_train_cv)).sample(frac=1).reset_index(drop=True)
         else:
             X_train_cv_full = X_train_cv
+
+        # Save each fold's training and test sets
         X_train_cv_full.to_csv(f"{args.out_dir}/kg_train_fold{n}.tsv.gz", sep="\t", header=False, index=False)
         X_test_cv.to_csv(f"{args.out_dir}/kg_test_fold{n}.tsv.gz", sep="\t", header=False, index=False)
 
-    # Create datasets for 10-fold CV prediction
+    # Create datasets for 10-fold cross-validation prediction without holdout set.
     kf = KFold(n_splits=10, random_state=42, shuffle=True)
     X = pd.concat((X_train, X_test, X_val)).drop_duplicates()
     y = X["predicate"]
     for n, (train_index, test_index) in enumerate(kf.split(X, y=y)):
         print("TRAIN:", train_index.shape, "TEST:", test_index.shape)
         X_train_cv, X_test_cv = X.iloc[train_index, :], X.iloc[test_index, :]
+
+        # If there are labels to predict, combine the training set with all other edges (not in the labels to predict)
         if args.labels_to_predict:
             X_train_cv_full = pd.concat((other, X_train)).sample(frac=1).reset_index(drop=True)
         else:
             X_train_cv_full = X_train_cv
+
+        # Save each fold's training and test sets
         X_train_cv.to_csv(f"{args.out_dir}/kg_train_fold{n}_noholdout.tsv.gz", sep="\t", header=False, index=False)
         X_test_cv.to_csv(f"{args.out_dir}/kg_test_fold{n}_noholdout.tsv.gz", sep="\t", header=False, index=False)
 

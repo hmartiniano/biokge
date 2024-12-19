@@ -39,47 +39,68 @@ def data_split(examples, labels, train_frac=0.8, random_state=None):
     return X_train, X_val, X_test, X_holdout, Y_train, Y_val, Y_test, Y_holdout
 
 
+# Define a function to read lines from a file and strip any leading/trailing whitespace
 def read_file(fname):
-    return [line.strip() for line in open(fname)]
+    with open(fname, 'r') as file:
+        return [line.strip() for line in file]
 
-
+# Analyze the unique values in the dataframe columns "object", "subject", and "predicate"
+# Print the number of unique objects, subjects, and predicates
+# Also print the unique predicates found in the dataframe
 def analyze(df):
-    print("object:", df["object"].nunique())
-    print("subject:", df["subject"].nunique())
-    print("predicate:", df["predicate"].nunique())
-    print(df["predicate"].unique())
+    print("Number of unique objects:", df["object"].nunique())
+    print("Number of unique subjects:", df["subject"].nunique())
+    print("Number of unique predicates:", df["predicate"].nunique())
+    print("Unique predicates:", df["predicate"].unique())
 
-
+# Clean the dataframe by removing rows where "subject" or "object" are in a list of Mondo Disease Ontology IDs
+# that have a corresponding Human Phenotype Ontology (HPO) ID.
 def clean_mondo(df):
+    # Read the Mondo Disease Ontology from an OBO file into a networkx graph object
     g = obonet.read_obo("mondo.obo")
+
+    # Iterate through the nodes in the graph and extract their IDs and data
     nodes = []
     for id_, data in g.nodes(data=True):
         data["id"] = id_
         nodes.append(data)
+
+    # Create a dictionary mapping Mondo Disease Ontology IDs to their corresponding HPO IDs
     corr = {}
     for node in nodes:
         for id_ in node.get("xref", []):
             if id_.startswith("HP:"):
                 corr[node["id"]] = id_
+
+    # Remove rows from the dataframe where "subject" or "object" are in the list of Mondo Disease Ontology IDs
+    # that have a corresponding HPO ID.
     df = df[~df.subject.isin(corr.keys()) & ~df.object.isin(corr.keys())]
+
     return df
 
-
+# Define an argument parser to handle command-line arguments for this script
 def get_parser():
     parser = argparse.ArgumentParser(
         prog="create_splits.py",
         description=(
-            "create_splits.py: Split Kg into train, test, valudation and holdout sets."
+            "Create_splits.py: Split knowledge graph (KG) into train, test, validation and holdout sets."
         ),
     )
-    parser.add_argument("-f", "--fname", help="Filename of CSV file with KG triples")
-    parser.add_argument("-o", "--out_dir", 
+
+    # Add a required argument for the filename of the CSV file containing KG triples
+    parser.add_argument("-f", "--fname", help="Filename of CSV file with KG triples", required=True)
+
+    # Add an optional argument for the name of the output directory (default is "kg")
+    parser.add_argument("-o", "--out_dir",
         default="kg",
         help="Name of output directory.")
-    parser.add_argument("-l", "--labels_to_predict", 
+
+    # Add an optional argument for a list of labels (predicates) to predict
+    parser.add_argument("-l", "--labels_to_predict",
         default=[],
         nargs="+",
-        help="Labels (predicates) to predict (comma separated)")
+        help="Labels (predicates) to predict")
+
     return parser
 
 
